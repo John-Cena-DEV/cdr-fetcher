@@ -1,9 +1,3 @@
-import requests
-import csv
-from datetime import datetime, timedelta
-import json
-import sys
-
 def fetch_cdr_data():
     """Fetch CDR data from Ozonetel API"""
     
@@ -28,19 +22,37 @@ def fetch_cdr_data():
         'apiKey': API_KEY
     }
     
-    payload = {
-        "fromDate": from_date,
-        "toDate": to_date,
-        "userName": USERNAME
-    }
-    
+    # Try different methods
     print(f"\n🔄 Attempting API request...")
     
     try:
-        # Try POST method
-        response = requests.post(API_URL, headers=headers, json=payload)
+        # Method 1: GET with params in URL
+        params = {
+            'fromDate': from_date,
+            'toDate': to_date,
+            'userName': USERNAME
+        }
         
+        print("Method 1: GET with URL params")
+        response = requests.get(API_URL, headers=headers, params=params)
         print(f"Status Code: {response.status_code}")
+        
+        if response.status_code != 200:
+            # Method 2: GET with JSON body (using data parameter)
+            print("\nMethod 2: GET with JSON in body (using data)")
+            payload_str = json.dumps({
+                "fromDate": from_date,
+                "toDate": to_date,
+                "userName": USERNAME
+            })
+            
+            response = requests.request(
+                'GET',
+                API_URL,
+                headers=headers,
+                data=payload_str
+            )
+            print(f"Status Code: {response.status_code}")
         
         if response.status_code == 200:
             raw_text = response.text
@@ -53,7 +65,6 @@ def fetch_cdr_data():
                 data = json.loads(raw_text)
                 return data
             except json.JSONDecodeError:
-                # If not valid JSON, return as text
                 print("⚠️ Response is not JSON, returning raw text")
                 return raw_text
         else:
@@ -63,6 +74,8 @@ def fetch_cdr_data():
         
     except Exception as e:
         print(f"❌ Request Error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def parse_cdr_response(data):
