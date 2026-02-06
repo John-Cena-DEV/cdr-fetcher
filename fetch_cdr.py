@@ -128,17 +128,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-```
-
-4. Click **"Commit changes"** (green button at top right)
-5. Click **"Commit changes"** again in the popup
-
----
-
-### **Step 4: Create Requirements File**
-
-1. Click **"Add file"** → **"Create new file"**
-2. **Name**: `requirements.txt`
-3. **Paste**:
-```
-requests
