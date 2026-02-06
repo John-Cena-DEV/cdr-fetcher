@@ -1,10 +1,8 @@
+import subprocess
+
+
 def fetch_cdr_data():
-    """Fetch CDR data from Ozonetel API"""
-    
-    # API Configuration
-    API_URL = 'https://in1-ccaas-api.ozonetel.com/ca_reports/fetchCDRDetails'
-    API_KEY = 'KK01b6bcdbcad7fdfced420ada0186393b'
-    USERNAME = 'qht_regrow'
+    """Fetch CDR data using curl (exactly like your original command)"""
     
     # Calculate yesterday's date
     yesterday = datetime.now() - timedelta(days=1)
@@ -14,69 +12,48 @@ def fetch_cdr_data():
     print(f"📞 Fetching CDR data")
     print(f"   From: {from_date}")
     print(f"   To: {to_date}")
-    print(f"   User: {USERNAME}")
     
-    headers = {
-        'Content-Type': 'application/json',
-        'accept': 'application/json',
-        'apiKey': API_KEY
-    }
-    
-    # Try different methods
-    print(f"\n🔄 Attempting API request...")
+    # Use curl command exactly as it works
+    curl_command = [
+        'curl',
+        '--location',
+        '--request', 'GET',
+        'https://in1-ccaas-api.ozonetel.com/ca_reports/fetchCDRDetails',
+        '--header', 'Content-Type: application/json',
+        '--header', 'accept: application/json',
+        '--header', 'apiKey: KK01b6bcdbcad7fdfced420ada0186393b',
+        '--data', json.dumps({
+            "fromDate": from_date,
+            "toDate": to_date,
+            "userName": "qht_regrow"
+        })
+    ]
     
     try:
-        # Method 1: GET with params in URL
-        params = {
-            'fromDate': from_date,
-            'toDate': to_date,
-            'userName': USERNAME
-        }
+        print("🔄 Running curl command...")
+        result = subprocess.run(curl_command, capture_output=True, text=True)
         
-        print("Method 1: GET with URL params")
-        response = requests.get(API_URL, headers=headers, params=params)
-        print(f"Status Code: {response.status_code}")
-        
-        if response.status_code != 200:
-            # Method 2: GET with JSON body (using data parameter)
-            print("\nMethod 2: GET with JSON in body (using data)")
-            payload_str = json.dumps({
-                "fromDate": from_date,
-                "toDate": to_date,
-                "userName": USERNAME
-            })
+        if result.returncode == 0:
+            print(f"✅ curl succeeded!")
+            print(f"📊 Response length: {len(result.stdout)} characters")
             
-            response = requests.request(
-                'GET',
-                API_URL,
-                headers=headers,
-                data=payload_str
-            )
-            print(f"Status Code: {response.status_code}")
-        
-        if response.status_code == 200:
-            raw_text = response.text
-            print(f"✅ Successfully fetched data!")
-            print(f"📊 Response length: {len(raw_text)} characters")
-            print(f"📊 First 200 chars: {raw_text[:200]}")
-            
-            # Try to parse as JSON
             try:
-                data = json.loads(raw_text)
+                data = json.loads(result.stdout)
                 return data
             except json.JSONDecodeError:
-                print("⚠️ Response is not JSON, returning raw text")
-                return raw_text
+                print("⚠️ Response is not JSON")
+                print(f"First 500 chars: {result.stdout[:500]}")
+                return result.stdout
         else:
-            print(f"❌ API Error: Status {response.status_code}")
-            print(f"Response: {response.text[:500]}")
+            print(f"❌ curl failed: {result.stderr}")
             return None
-        
+            
     except Exception as e:
-        print(f"❌ Request Error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error: {e}")
         return None
+
+
+
 
 def parse_cdr_response(data):
     """Parse the CDR response into a list of records"""
