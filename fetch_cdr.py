@@ -1,5 +1,9 @@
+import requests
+import csv
+import json
+import sys
 import subprocess
-
+from datetime import datetime, timedelta
 
 def fetch_cdr_data():
     """Fetch CDR data using curl (exactly like your original command)"""
@@ -12,8 +16,15 @@ def fetch_cdr_data():
     print(f"📞 Fetching CDR data")
     print(f"   From: {from_date}")
     print(f"   To: {to_date}")
+    print(f"   User: qht_regrow")
     
     # Use curl command exactly as it works
+    payload_json = json.dumps({
+        "fromDate": from_date,
+        "toDate": to_date,
+        "userName": "qht_regrow"
+    })
+    
     curl_command = [
         'curl',
         '--location',
@@ -22,38 +33,36 @@ def fetch_cdr_data():
         '--header', 'Content-Type: application/json',
         '--header', 'accept: application/json',
         '--header', 'apiKey: KK01b6bcdbcad7fdfced420ada0186393b',
-        '--data', json.dumps({
-            "fromDate": from_date,
-            "toDate": to_date,
-            "userName": "qht_regrow"
-        })
+        '--data', payload_json
     ]
     
     try:
         print("🔄 Running curl command...")
-        result = subprocess.run(curl_command, capture_output=True, text=True)
+        result = subprocess.run(curl_command, capture_output=True, text=True, timeout=60)
         
         if result.returncode == 0:
             print(f"✅ curl succeeded!")
             print(f"📊 Response length: {len(result.stdout)} characters")
+            print(f"📊 First 300 chars: {result.stdout[:300]}")
             
             try:
                 data = json.loads(result.stdout)
+                print(f"✅ Parsed as JSON successfully")
                 return data
-            except json.JSONDecodeError:
-                print("⚠️ Response is not JSON")
-                print(f"First 500 chars: {result.stdout[:500]}")
-                return result.stdout
+            except json.JSONDecodeError as e:
+                print(f"⚠️ Response is not valid JSON: {e}")
+                print(f"Full response: {result.stdout[:1000]}")
+                return None
         else:
-            print(f"❌ curl failed: {result.stderr}")
+            print(f"❌ curl failed with return code: {result.returncode}")
+            print(f"Error: {result.stderr}")
             return None
             
     except Exception as e:
         print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
         return None
-
-
-
 
 def parse_cdr_response(data):
     """Parse the CDR response into a list of records"""
@@ -68,35 +77,27 @@ def parse_cdr_response(data):
     
     # If data is a dict, check for common keys
     if isinstance(data, dict):
-        for key in ['data', 'records', 'results', 'calls', 'cdrDetails']:
+        for key in ['data', 'records', 'results', 'calls', 'cdrDetails', 'callDetails']:
             if key in data:
                 print(f"✅ Found data in '{key}' field")
-                return data[key]
+                if isinstance(data[key], list):
+                    return data[key]
         
         # If dict has call-related keys, wrap in list
         if 'CallID' in data or 'callID' in data or 'AgentID' in data:
             print("✅ Single record found, wrapping in list")
             return [data]
-    
-    # If it's a string that looks like JSON
-    if isinstance(data, str):
-        # Try to parse it
-        try:
-            parsed = json.loads(data)
-            return parse_cdr_response(parsed)
-        except:
-            print(f"⚠️ Could not parse string as JSON")
-            # Try to find JSON-like structure
-            if data.startswith('[{') or data.startswith('{'):
-                try:
-                    # Clean up the string
-                    cleaned = data.strip()
-                    parsed = json.loads(cleaned)
-                    return parse_cdr_response(parsed)
-                except:
-                    pass
+        
+        # Check if all values are similar (might be single record)
+        print(f"📊 Dictionary keys: {list(data.keys())[:20]}")
+        
+        # If it looks like a single record, wrap it
+        if len(data) > 5:  # Reasonable number of fields
+            print("✅ Treating as single record")
+            return [data]
     
     print(f"⚠️ Unexpected data format: {type(data)}")
+    print(f"Data structure: {str(data)[:500]}")
     return None
 
 def save_to_csv(records):
@@ -131,7 +132,8 @@ def save_to_csv(records):
             print("⚠️ No keys found in records")
             return None
         
-        print(f"📊 Found {len(all_keys)} columns: {', '.join(list(all_keys)[:10])}...")
+        print(f"📊 Found {len(all_keys)} columns")
+        print(f"📊 First 10 columns: {', '.join(list(all_keys)[:10])}")
         
         # Save both files
         for fname in [filename, latest_filename]:
@@ -163,18 +165,25 @@ def main():
     raw_data = fetch_cdr_data()
     
     if not raw_data:
+        print("=" * 60)
         print("❌ No data received from API")
+        print("=" * 60)
         sys.exit(1)
     
     # Parse the response
     records = parse_cdr_response(raw_data)
     
     if not records:
+        print("=" * 60)
         print("❌ Could not parse data into records")
         # Save raw data as JSON for debugging
-        with open('raw_response.json', 'w') as f:
-            json.dump(raw_data, f, indent=2)
-        print("💾 Saved raw response to raw_response.json for debugging")
+        try:
+            with open('raw_response.json', 'w') as f:
+                json.dump(raw_data, f, indent=2)
+            print("💾 Saved raw response to raw_response.json for debugging")
+        except:
+            pass
+        print("=" * 60)
         sys.exit(1)
     
     # Save to CSV
