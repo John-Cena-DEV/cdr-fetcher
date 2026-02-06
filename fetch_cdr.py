@@ -14,9 +14,9 @@ def fetch_cdr_data():
     
     # Calculate yesterday's date
 # Calculate today's date
-now = datetime.now()
-from_date = now.strftime('%Y-%m-%d 00:00:00')
-to_date = now.strftime('%Y-%m-%d %H:%M:%S')
+    now = datetime.now()
+    from_date = now.strftime('%Y-%m-%d 00:00:00')
+    to_date = now.strftime('%Y-%m-%d %H:%M:%S')
 
     
     print(f"📞 Fetching CDR data")
