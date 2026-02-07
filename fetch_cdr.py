@@ -3,6 +3,7 @@ import csv
 from datetime import datetime, timedelta
 import json
 import sys
+import os
 
 def fetch_cdr_data():
     """Fetch CDR data from Ozonetel API"""
@@ -75,16 +76,12 @@ def fetch_cdr_data():
         print(f"❌ Request Error: {e}")
         return None
 
-def save_to_csv(data):
-    """Save data to CSV file"""
+def save_to_csv(data, filename='cdr_data_master.csv'):
+    """Save data to a single CSV file (overwrites existing file)"""
     
     if not data:
         print("⚠️ No data to save")
         return None
-    
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f'cdr_data_{timestamp}.csv'
-    latest_filename = 'cdr_data_latest.csv'
     
     try:
         # Handle list of dictionaries
@@ -92,16 +89,21 @@ def save_to_csv(data):
             if isinstance(data[0], dict):
                 keys = data[0].keys()
                 
-                # Save both files
-                for fname in [filename, latest_filename]:
-                    with open(fname, 'w', newline='', encoding='utf-8') as f:
-                        writer = csv.DictWriter(f, fieldnames=keys)
-                        writer.writeheader()
-                        writer.writerows(data)
+                # Check if file exists
+                file_exists = os.path.isfile(filename)
                 
-                print(f"✅ Saved {len(data)} records")
-                print(f"   - {filename}")
-                print(f"   - {latest_filename}")
+                with open(filename, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=keys)
+                    writer.writeheader()
+                    writer.writerows(data)
+                
+                if file_exists:
+                    print(f"🔄 Refreshed existing file: {filename}")
+                else:
+                    print(f"📝 Created new file: {filename}")
+                
+                print(f"✅ Saved {len(data)} records to {filename}")
+                
                 return filename
             else:
                 print(f"⚠️ List items are not dictionaries: {type(data[0])}")
@@ -112,21 +114,22 @@ def save_to_csv(data):
             for key in ['data', 'records', 'results', 'calls']:
                 if key in data and isinstance(data[key], list):
                     print(f"Found data in '{key}' field")
-                    return save_to_csv(data[key])
+                    return save_to_csv(data[key], filename)
             
-            # Save the dict itself
+            # Save the dict itself as a single row
             print("Saving dictionary as single row")
-            for fname in [filename, latest_filename]:
-                with open(fname, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.DictWriter(f, fieldnames=data.keys())
-                    writer.writeheader()
-                    writer.writerow(data)
+            
+            with open(filename, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=data.keys())
+                writer.writeheader()
+                writer.writerow(data)
             
             print(f"✅ Saved to {filename}")
             return filename
         
         else:
             # Save as JSON for unknown formats
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             json_filename = f'cdr_data_{timestamp}.json'
             with open(json_filename, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -150,7 +153,7 @@ def main():
     # Fetch data
     data = fetch_cdr_data()
     
-    # Save to CSV
+    # Save to master CSV (overwrite mode)
     if data:
         result = save_to_csv(data)
         print("=" * 60)
