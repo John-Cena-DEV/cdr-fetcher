@@ -3,7 +3,10 @@ name: Fetch CDR Data Daily
 on:
   schedule:
     # Runs at 5:30 PM UTC = 11:00 PM IST (UTC+5:30)
-    - cron: '30 4-15 * * *'
+    - cron: '30 3 * * *'
+    - cron: '0,30 4-15 * * *'
+    - cron: '30 16 * * *'
+
  
   
   # Allows manual trigger from Actions tab
