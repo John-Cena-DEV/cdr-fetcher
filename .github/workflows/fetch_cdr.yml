@@ -2,11 +2,12 @@ name: Fetch CDR Data Daily
 
 on:
   schedule:
-    - cron: '30 1 * * *'   # runs every day at 07:00 IST (01:30 UTC)
-  workflow_dispatch:         # also allow manual trigger
+    - cron: '30 1 * * *'   # 07:00 IST (01:30 UTC) every day
+  workflow_dispatch:         # allow manual trigger any time
 
+# Silence the Node.js 20 deprecation warning (required before June 2 2026)
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node 24 (required after June 2 2026)
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   fetch-cdr:
@@ -17,20 +18,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Python setup ────────────────────────────────────
+      # ── 2. Python ──────────────────────────────────────────
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # ── 3. Cache pip dependencies ──────────────────────────
+      # ── 3. Cache pip (speeds up repeated runs) ─────────────
       - name: Cache pip
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          restore-keys: ${{ runner.os }}-pip-
 
       # ── 4. Install dependencies ────────────────────────────
       - name: Install dependencies
@@ -38,19 +38,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── 5. Run the script ──────────────────────────────────
+      # ── 5. Run CDR fetch ───────────────────────────────────
+      #   Secrets are injected as env vars — never hardcode in script
       - name: Run CDR fetch script
+        env:
+          OZONETEL_API_KEY:  ${{ secrets.OZONETEL_API_KEY }}
+          OZONETEL_USERNAME: ${{ secrets.OZONETEL_USERNAME }}
         run: python fetch_cdr.py
 
-      # ── 6. Commit & push the updated CSV ───────────────────
+      # ── 6. Commit & push updated CSV ───────────────────────
       - name: Commit and push CSV
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name  "github-actions[bot]"
           git add -A
-          # Only commit if there is something staged
           if git diff --staged --quiet; then
-            echo "✅ No changes to commit — CSV is already up to date."
+            echo "✅ No changes — CSV already up to date."
           else
             git commit -m "chore: update CDR data [$(date +'%Y-%m-%d %H:%M:%S UTC')]"
             git push
