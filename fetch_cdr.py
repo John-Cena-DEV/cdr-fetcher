@@ -39,38 +39,17 @@ def fetch_cdr_data():
     print(f"\n🔄 Attempting API request...")
     
     try:
-        import time
-
-print("Using GET method (correct)...")
-
-max_retries = 3
-
-for attempt in range(max_retries):
-    try:
-        response = requests.request(
-            method="GET",
-            url=API_URL,
-            headers=headers,
-            data=json.dumps(payload)   # ✅ IMPORTANT FIX
-        )
-
-        print(f"Attempt {attempt+1} → Status: {response.status_code}")
-
-        if response.status_code == 200:
-            break
-
-        elif response.status_code == 429:
-            print("⏳ Rate limit hit, waiting 5 sec...")
-            time.sleep(5)
-
-        else:
-            print(f"❌ API Error: {response.status_code}")
-            print(response.text)
-            return None
-
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        time.sleep(3)
+        # Try as POST first (more compatible)
+        print("Trying POST method...")
+        response = requests.post(API_URL, headers=headers, json=payload)
+        
+        print(f"Status Code: {response.status_code}")
+        print(f"Response Headers: {dict(response.headers)}")
+        
+        if response.status_code == 405:  # Method not allowed
+            print("POST not allowed, trying GET...")
+            response = requests.get(API_URL, headers=headers, json=payload)
+            print(f"Status Code: {response.status_code}")
         
         if response.status_code == 200:
             try:
@@ -83,12 +62,7 @@ for attempt in range(max_retries):
                 elif isinstance(cdr_data, dict):
                     print(f"📊 Response keys: {list(cdr_data.keys())}")
                 
-                if "details" in cdr_data:
-    return cdr_data["details"]
-else:
-    print("❌ 'details' key not found")
-    print(cdr_data)
-    return None
+                return cdr_data
             except json.JSONDecodeError as e:
                 print(f"❌ JSON Decode Error: {e}")
                 print(f"Raw response: {response.text[:500]}")
@@ -198,4 +172,4 @@ def main():
         sys.exit(1)
 
 if __name__ == '__main__':
-    main()
+    main() 
