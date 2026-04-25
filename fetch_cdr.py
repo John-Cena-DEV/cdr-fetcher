@@ -7,18 +7,18 @@ import time
 from datetime import datetime
 
 # ================================================================
-# CONFIG  ← hardcoded exactly like your working GSheet script
+# CONFIG
 # ================================================================
 API_KEY  = "KK01b6bcdbcad7fdfced420ada0186393b"
 USERNAME = "qht_regrow"
 URL      = "https://in1-ccaas-api.ozonetel.com/ca_reports/fetchCDRDetails"
 
 MAX_RETRIES  = 3
-RETRY_BASE_S = 15   # 15s → 30s → 60s backoff on 429
+RETRY_BASE_S = 15
 
 
 # ================================================================
-# FETCH  ← identical request pattern to your working GSheet script
+# FETCH
 # ================================================================
 def fetch_cdr_data():
     now       = datetime.now()
@@ -30,25 +30,20 @@ def fetch_cdr_data():
     print(f"   To   : {to_date}")
     print(f"   User : {USERNAME}")
 
-    # ── Exact same headers as your working script ──
     headers = {
         "apiKey":       API_KEY,
         "Content-Type": "application/json",
         "accept":       "application/json",
     }
-
-    # ── Exact same payload as your working script ──
-    payload_dict = {
+    payload = json.dumps({
         "fromDate": from_date,
         "toDate":   to_date,
         "userName": USERNAME,
-    }
-    payload = json.dumps(payload_dict, allow_nan=True)
+    }, allow_nan=True)
 
     for attempt in range(1, MAX_RETRIES + 1):
         print(f"\n🔄 Attempt {attempt}/{MAX_RETRIES}...")
         try:
-            # ── Exact same request call as your working script ──
             response = requests.request(
                 method="GET",
                 url=URL,
@@ -63,13 +58,11 @@ def fetch_cdr_data():
                     data = response.json()
                 except json.JSONDecodeError as e:
                     print(f"   ❌ JSON decode error: {e}")
-                    print(f"   Raw response: {response.text[:300]}")
+                    print(f"   Raw: {response.text[:300]}")
                     return None
 
-                # ── Exact same response key as your working script ──
                 if "details" not in data:
-                    print(f"   ❌ 'details' key missing in response.")
-                    print(f"   Keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+                    print(f"   ❌ 'details' key missing. Keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
                     print(f"   Response: {str(data)[:300]}")
                     return None
 
@@ -87,9 +80,9 @@ def fetch_cdr_data():
                     return None
 
             elif response.status_code == 401:
-                print("   ❌ 401 Unauthorised — API key or username is wrong.")
-                print(f"   API_KEY used : {API_KEY[:10]}...")
-                print(f"   USERNAME used: {USERNAME}")
+                print(f"   ❌ 401 Unauthorised — API key or username wrong.")
+                print(f"   API_KEY : {API_KEY[:10]}...")
+                print(f"   USERNAME: {USERNAME}")
                 return None
 
             else:
@@ -108,14 +101,14 @@ def fetch_cdr_data():
 
 
 # ================================================================
-# DEDUP  ← same logic as your working GSheet script
+# DEDUP  (inbound only, same as working GSheet script)
 # ================================================================
 def dedup_inbound(records):
     if not records:
         return records
 
     if "CallID" not in records[0] or "Type" not in records[0]:
-        print(f"⚠️  Skipping dedup — columns missing. Found: {list(records[0].keys())}")
+        print(f"⚠️  Skipping dedup — columns missing.")
         return records
 
     inbound = [r for r in records if str(r.get("Type", "")).lower() == "inbound"]
@@ -134,7 +127,12 @@ def dedup_inbound(records):
 
 
 # ================================================================
-# SAVE TO CSV  ← same string-conversion logic as your working script
+# SAVE — stores full JSON in A2 so GSheet importCDRFromGitHub()
+#         can read rows[1][0] and JSON.parse() it directly
+#
+#  CSV layout:
+#    Row 1 (header) : "data"
+#    Row 2 (A2)     : entire JSON array as a string
 # ================================================================
 def save_to_csv(records, filename="cdr_data_master.csv"):
     if not records:
@@ -142,32 +140,21 @@ def save_to_csv(records, filename="cdr_data_master.csv"):
         return None
 
     try:
-        cleaned = []
-        for row in records:
-            clean_row = {}
-            for k, v in row.items():
-                if v is None:
-                    clean_row[k] = ""
-                elif isinstance(v, float) and str(v) == "nan":
-                    clean_row[k] = ""
-                else:
-                    clean_row[k] = str(v)
-            cleaned.append(clean_row)
-
-        file_existed = os.path.isfile(filename)
-        fieldnames   = list(cleaned[0].keys())
+        # Serialise the full list to a JSON string
+        json_string = json.dumps(records, ensure_ascii=False)
 
         with open(filename, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(cleaned)
+            writer = csv.writer(f)
+            writer.writerow(["data"])          # Row 1 — header (rows[0][0])
+            writer.writerow([json_string])     # Row 2 — JSON  (rows[1][0])
 
-        action = "Refreshed" if file_existed else "Created"
-        print(f"\n💾 {action} '{filename}'  ({len(cleaned)} rows, {len(fieldnames)} columns)")
+        print(f"\n💾 Saved '{filename}'")
+        print(f"   Records : {len(records)}")
+        print(f"   Format  : JSON string in cell A2 (GSheet-compatible)")
         return filename
 
     except Exception as e:
-        print(f"❌ Error saving CSV: {e}")
+        print(f"❌ Error saving file: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -190,9 +177,9 @@ def main():
         sys.exit(1)
 
     print(f"\n🔁 Deduplicating inbound calls...")
-    print(f"   Total before dedup : {len(records)}")
+    print(f"   Total before : {len(records)}")
     records = dedup_inbound(records)
-    print(f"   Total after dedup  : {len(records)}")
+    print(f"   Total after  : {len(records)}")
 
     result = save_to_csv(records)
     print("=" * 60)
