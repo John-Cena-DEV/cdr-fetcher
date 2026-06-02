@@ -1,116 +1,138 @@
+import requests
 import csv
 import json
+import os
 import sys
-import pandas as pd
-from datetime import datetime, timedelta
-import random
+import time
+from datetime import datetime
 
 # ================================================================
 # CONFIG
 # ================================================================
+API_KEY  = "KK01b6bcdbcad7fdfced420ada0186393b"
 USERNAME = "qht_regrow"
+URL      = "https://in1-ccaas-api.ozonetel.com/ca_reports/fetchCDRDetails"
 
-# ================================================================
-# STATIC DUMMY DATA  — replace API call
-# Mimics the exact structure Ozonetel returns in "details"
-# ================================================================
-def generate_static_records():
-    now   = datetime.now()
-    today = now.strftime("%Y-%m-%d")
-
-    agents = [
-        "Ravi Kumar", "Priya Sharma", "Amit Singh",
-        "Neha Gupta", "Rohit Verma", "Sunita Yadav",
-    ]
-    dispositions = ["Answered", "Not Answered", "Busy", "Voicemail", "Transferred"]
-    queues       = ["Sales", "Support", "Billing", "General"]
-    dids         = ["01204567890", "01204567891", "01204567892"]
-
-    records = []
-    base_time = datetime.strptime(f"{today} 09:00:00", "%Y-%m-%d %H:%M:%S")
-
-    # ── 30 inbound calls (some with duplicate CallIDs to test dedup) ──
-    call_ids_pool = [f"IB{1000 + i}" for i in range(22)]   # 22 unique IDs
-    inbound_ids   = call_ids_pool + call_ids_pool[:8]       # 8 duplicates → 30 total
-
-    for i, cid in enumerate(inbound_ids):
-        call_time = base_time + timedelta(minutes=i * 18, seconds=random.randint(0, 59))
-        duration  = random.randint(30, 600)
-        records.append({
-            "CallID":          cid,
-            "Type":            "inbound",
-            "AgentName":       random.choice(agents),
-            "CustomerNumber":  f"98{random.randint(10000000, 99999999)}",
-            "DID":             random.choice(dids),
-            "Queue":           random.choice(queues),
-            "Disposition":     random.choice(dispositions),
-            "StartTime":       call_time.strftime("%Y-%m-%d %H:%M:%S"),
-            "EndTime":         (call_time + timedelta(seconds=duration)).strftime("%Y-%m-%d %H:%M:%S"),
-            "Duration":        str(duration),
-            "HoldTime":        str(random.randint(0, 60)),
-            "WaitTime":        str(random.randint(5, 120)),
-            "RecordingURL":    f"https://recordings.example.com/{cid}.mp3",
-            "Date":            today,
-            "UserName":        USERNAME,
-        })
-
-    # ── 15 outbound calls (no dedup needed) ──
-    for i in range(15):
-        cid       = f"OB{2000 + i}"
-        call_time = base_time + timedelta(minutes=i * 25 + 5, seconds=random.randint(0, 59))
-        duration  = random.randint(15, 480)
-        records.append({
-            "CallID":          cid,
-            "Type":            "outbound",
-            "AgentName":       random.choice(agents),
-            "CustomerNumber":  f"91{random.randint(10000000, 99999999)}",
-            "DID":             random.choice(dids),
-            "Queue":           random.choice(queues),
-            "Disposition":     random.choice(dispositions),
-            "StartTime":       call_time.strftime("%Y-%m-%d %H:%M:%S"),
-            "EndTime":         (call_time + timedelta(seconds=duration)).strftime("%Y-%m-%d %H:%M:%S"),
-            "Duration":        str(duration),
-            "HoldTime":        str(random.randint(0, 30)),
-            "WaitTime":        "0",
-            "RecordingURL":    f"https://recordings.example.com/{cid}.mp3",
-            "Date":            today,
-            "UserName":        USERNAME,
-        })
-
-    return records
+MAX_RETRIES  = 3
+RETRY_BASE_S = 15
 
 
 # ================================================================
-# DEDUP  — pandas drop_duplicates on CallID for inbound only
+# FETCH
+# ================================================================
+def fetch_cdr_data():
+    now       = datetime.now()
+    from_date = now.strftime("%Y-%m-%d 00:00:00")
+    to_date   = now.strftime("%Y-%m-%d 23:59:59")
+
+    print(f"\n📞 Fetching CDR data")
+    print(f"   From : {from_date}")
+    print(f"   To   : {to_date}")
+    print(f"   User : {USERNAME}")
+
+    headers = {
+        "apiKey":       API_KEY,
+        "Content-Type": "application/json",
+        "accept":       "application/json",
+    }
+    payload = json.dumps({
+        "fromDate": from_date,
+        "toDate":   to_date,
+        "userName": USERNAME,
+    }, allow_nan=True)
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        print(f"\n🔄 Attempt {attempt}/{MAX_RETRIES}...")
+        try:
+            response = requests.request(
+                method="GET",
+                url=URL,
+                headers=headers,
+                data=payload,
+                timeout=30,
+            )
+            print(f"   Status : {response.status_code}")
+
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                except json.JSONDecodeError as e:
+                    print(f"   ❌ JSON decode error: {e}")
+                    print(f"   Raw: {response.text[:300]}")
+                    return None
+
+                if "details" not in data:
+                    print(f"   ❌ 'details' key missing. Keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+                    print(f"   Response: {str(data)[:300]}")
+                    return None
+
+                records = data["details"]
+                print(f"   ✅ Got {len(records)} records.")
+                return records
+
+            elif response.status_code == 429:
+                wait = RETRY_BASE_S * (2 ** (attempt - 1))
+                if attempt < MAX_RETRIES:
+                    print(f"   ⏳ Rate limited. Waiting {wait}s...")
+                    time.sleep(wait)
+                else:
+                    print("   ❌ Rate limited — max retries exhausted.")
+                    return None
+
+            elif response.status_code == 401:
+                print(f"   ❌ 401 Unauthorised — API key or username wrong.")
+                print(f"   API_KEY : {API_KEY[:10]}...")
+                print(f"   USERNAME: {USERNAME}")
+                return None
+
+            else:
+                print(f"   ❌ Error {response.status_code}: {response.text[:300]}")
+                return None
+
+        except requests.exceptions.Timeout:
+            print(f"   ⏱️  Timeout on attempt {attempt}.")
+            if attempt < MAX_RETRIES:
+                time.sleep(10)
+        except requests.exceptions.RequestException as e:
+            print(f"   ❌ Request error: {e}")
+            return None
+
+    return None
+
+
+# ================================================================
+# DEDUP  (inbound only, same as working GSheet script)
 # ================================================================
 def dedup_inbound(records):
     if not records:
         return records
 
-    df = pd.DataFrame(records)
-
-    if "CallID" not in df.columns or "Type" not in df.columns:
-        print("⚠️  Skipping dedup — CallID/Type columns missing.")
-        print(f"   Available columns: {list(df.columns)}")
+    if "CallID" not in records[0] or "Type" not in records[0]:
+        print(f"⚠️  Skipping dedup — columns missing.")
         return records
 
-    inbound_df = df[df["Type"].str.lower() == "inbound"]
-    other_df   = df[df["Type"].str.lower() != "inbound"]
+    inbound = [r for r in records if str(r.get("Type", "")).lower() == "inbound"]
+    other   = [r for r in records if str(r.get("Type", "")).lower() != "inbound"]
 
-    inbound_deduped = inbound_df.drop_duplicates(subset=["CallID"], keep="first")
+    seen, deduped = set(), []
+    for r in inbound:
+        cid = r.get("CallID")
+        if cid not in seen:
+            seen.add(cid)
+            deduped.append(r)
 
-    print(f"   Inbound : {len(inbound_df)} → {len(inbound_deduped)} after dedup")
-    print(f"   Other   : {len(other_df)}")
-
-    merged = pd.concat([inbound_deduped, other_df], ignore_index=True)
-    merged = merged.fillna("")
-    merged = merged.astype(str)
-
-    return merged.to_dict(orient="records")
+    print(f"   Inbound : {len(inbound)} → {len(deduped)} after dedup")
+    print(f"   Other   : {len(other)}")
+    return deduped + other
 
 
 # ================================================================
-# SAVE  — same CSV layout (JSON string in A2, GSheet-compatible)
+# SAVE — stores full JSON in A2 so GSheet importCDRFromGitHub()
+#         can read rows[1][0] and JSON.parse() it directly
+#
+#  CSV layout:
+#    Row 1 (header) : "data"
+#    Row 2 (A2)     : entire JSON array as a string
 # ================================================================
 def save_to_csv(records, filename="cdr_data_master.csv"):
     if not records:
@@ -118,12 +140,13 @@ def save_to_csv(records, filename="cdr_data_master.csv"):
         return None
 
     try:
+        # Serialise the full list to a JSON string
         json_string = json.dumps(records, ensure_ascii=False)
 
         with open(filename, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["data"])       # Row 1 — header  (rows[0][0])
-            writer.writerow([json_string])  # Row 2 — JSON    (rows[1][0])
+            writer.writerow(["data"])          # Row 1 — header (rows[0][0])
+            writer.writerow([json_string])     # Row 2 — JSON  (rows[1][0])
 
         print(f"\n💾 Saved '{filename}'")
         print(f"   Records : {len(records)}")
@@ -141,28 +164,24 @@ def save_to_csv(records, filename="cdr_data_master.csv"):
 # MAIN
 # ================================================================
 def main():
-    now = datetime.now()
-
     print("=" * 60)
-    print("🚀 CDR Data Fetch — Static Mode (No API)")
+    print("🚀 CDR Data Fetch — Starting")
     print("=" * 60)
-    print(f"\n📋 Generating static CDR data")
-    print(f"   Date : {now.strftime('%Y-%m-%d')}")
-    print(f"   User : {USERNAME}")
 
-    # 1. Generate static records (replaces API call)
-    records = generate_static_records()
-    print(f"\n   ✅ Generated {len(records)} records (30 inbound + 15 outbound, 8 inbound dupes)")
+    records = fetch_cdr_data()
 
-    # 2. Dedup
+    if records is None:
+        print("=" * 60)
+        print("❌ Process failed — no data received.")
+        print("=" * 60)
+        sys.exit(1)
+
     print(f"\n🔁 Deduplicating inbound calls...")
     print(f"   Total before : {len(records)}")
     records = dedup_inbound(records)
     print(f"   Total after  : {len(records)}")
 
-    # 3. Save
     result = save_to_csv(records)
-
     print("=" * 60)
     if result:
         print(f"✅ Done — output: {result}")
