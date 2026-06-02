@@ -15,8 +15,8 @@ USERNAME     = "qht_regrow"
 URL          = "https://in1-ccaas-api.ozonetel.com/ca_reports/fetchCDRDetails"
 CSV_FILENAME = "cdr_data_master.csv"
 
-MAX_RETRIES  = 3
-RETRY_BASE_S = 15
+MAX_RETRIES  = 5
+RETRY_BASE_S = 20
 
 
 # ================================================================
@@ -50,7 +50,7 @@ def fetch_cdr_data():
                 url=URL,
                 headers=headers,
                 data=payload,
-                timeout=30,
+                timeout=180,
             )
             print(f"   Status : {response.status_code}")
 
@@ -69,13 +69,13 @@ def fetch_cdr_data():
                 print(f"   ✅ Got {len(records)} records.")
                 return records
 
-            elif response.status_code == 429:
+            elif response.status_code in (429, 502, 503, 504):
                 wait = RETRY_BASE_S * (2 ** (attempt - 1))
                 if attempt < MAX_RETRIES:
-                    print(f"   ⏳ Rate limited. Waiting {wait}s...")
+                    print(f"   ⏳ {response.status_code} — server busy/timeout. Waiting {wait}s...")
                     time.sleep(wait)
                 else:
-                    print("   ❌ Rate limited — max retries exhausted.")
+                    print(f"   ❌ {response.status_code} — max retries exhausted.")
                     return None
 
             elif response.status_code == 401:
