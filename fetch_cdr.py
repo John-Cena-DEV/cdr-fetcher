@@ -1,120 +1,87 @@
-import requests
 import csv
 import json
-import os
 import sys
-import time
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+import random
 
 # ================================================================
 # CONFIG
 # ================================================================
-API_KEY  = "KK01b6bcdbcad7fdfced420ada0186393b"
 USERNAME = "qht_regrow"
-URL      = "https://in1-ccaas-api.ozonetel.com/ca_reports/fetchCDRDetails"
 
-MAX_RETRIES     = 3
-RETRY_BASE_S    = 15
-RETRYABLE_CODES = {429, 500, 502, 503, 504}
+# ================================================================
+# STATIC DUMMY DATA  — replace API call
+# Mimics the exact structure Ozonetel returns in "details"
+# ================================================================
+def generate_static_records():
+    now   = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+
+    agents = [
+        "Ravi Kumar", "Priya Sharma", "Amit Singh",
+        "Neha Gupta", "Rohit Verma", "Sunita Yadav",
+    ]
+    dispositions = ["Answered", "Not Answered", "Busy", "Voicemail", "Transferred"]
+    queues       = ["Sales", "Support", "Billing", "General"]
+    dids         = ["01204567890", "01204567891", "01204567892"]
+
+    records = []
+    base_time = datetime.strptime(f"{today} 09:00:00", "%Y-%m-%d %H:%M:%S")
+
+    # ── 30 inbound calls (some with duplicate CallIDs to test dedup) ──
+    call_ids_pool = [f"IB{1000 + i}" for i in range(22)]   # 22 unique IDs
+    inbound_ids   = call_ids_pool + call_ids_pool[:8]       # 8 duplicates → 30 total
+
+    for i, cid in enumerate(inbound_ids):
+        call_time = base_time + timedelta(minutes=i * 18, seconds=random.randint(0, 59))
+        duration  = random.randint(30, 600)
+        records.append({
+            "CallID":          cid,
+            "Type":            "inbound",
+            "AgentName":       random.choice(agents),
+            "CustomerNumber":  f"98{random.randint(10000000, 99999999)}",
+            "DID":             random.choice(dids),
+            "Queue":           random.choice(queues),
+            "Disposition":     random.choice(dispositions),
+            "StartTime":       call_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "EndTime":         (call_time + timedelta(seconds=duration)).strftime("%Y-%m-%d %H:%M:%S"),
+            "Duration":        str(duration),
+            "HoldTime":        str(random.randint(0, 60)),
+            "WaitTime":        str(random.randint(5, 120)),
+            "RecordingURL":    f"https://recordings.example.com/{cid}.mp3",
+            "Date":            today,
+            "UserName":        USERNAME,
+        })
+
+    # ── 15 outbound calls (no dedup needed) ──
+    for i in range(15):
+        cid       = f"OB{2000 + i}"
+        call_time = base_time + timedelta(minutes=i * 25 + 5, seconds=random.randint(0, 59))
+        duration  = random.randint(15, 480)
+        records.append({
+            "CallID":          cid,
+            "Type":            "outbound",
+            "AgentName":       random.choice(agents),
+            "CustomerNumber":  f"91{random.randint(10000000, 99999999)}",
+            "DID":             random.choice(dids),
+            "Queue":           random.choice(queues),
+            "Disposition":     random.choice(dispositions),
+            "StartTime":       call_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "EndTime":         (call_time + timedelta(seconds=duration)).strftime("%Y-%m-%d %H:%M:%S"),
+            "Duration":        str(duration),
+            "HoldTime":        str(random.randint(0, 30)),
+            "WaitTime":        "0",
+            "RecordingURL":    f"https://recordings.example.com/{cid}.mp3",
+            "Date":            today,
+            "UserName":        USERNAME,
+        })
+
+    return records
 
 
 # ================================================================
-# FETCH  — uses exact same request style as the working script
-#          (GET + data=payload + allow_nan), plus retries
-# ================================================================
-def fetch_cdr_data():
-    now       = datetime.now()
-    from_date = now.strftime("%Y-%m-%d 00:00:00")
-    to_date   = now.strftime("%Y-%m-%d 23:59:59")
-
-    print(f"\n📞 Fetching CDR data")
-    print(f"   From : {from_date}")
-    print(f"   To   : {to_date}")
-    print(f"   User : {USERNAME}")
-
-    payload = json.dumps(
-        {"fromDate": from_date, "toDate": to_date, "userName": USERNAME},
-        allow_nan=True          # ← kept exactly as in working script
-    )
-    headers = {
-        "apiKey":       API_KEY,
-        "Content-Type": "application/json",
-        "accept":       "application/json",
-    }
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        print(f"\n🔄 Attempt {attempt}/{MAX_RETRIES}...")
-        try:
-            # ── same call style as the working script ──
-            response = requests.request(
-                method="GET",
-                url=URL,
-                headers=headers,
-                data=payload,
-                timeout=60,     # ← increased from 30 s
-            )
-            print(f"   Status : {response.status_code}")
-
-            # ── 200 OK ──
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                except json.JSONDecodeError as e:
-                    print(f"   ❌ JSON decode error: {e}")
-                    print(f"   Raw: {response.text[:300]}")
-                    return None
-
-                if "details" not in data:
-                    print(f"   ❌ 'details' key missing.")
-                    print(f"   Keys    : {list(data.keys()) if isinstance(data, dict) else type(data)}")
-                    print(f"   Response: {str(data)[:300]}")
-                    return None
-
-                records = data["details"]
-                print(f"   ✅ Got {len(records)} records.")
-                return records
-
-            # ── 401 – wrong credentials, no point retrying ──
-            elif response.status_code == 401:
-                print("   ❌ 401 Unauthorised — check API_KEY / USERNAME.")
-                return None
-
-            # ── transient errors → retry with back-off ──
-            elif response.status_code in RETRYABLE_CODES:
-                wait = RETRY_BASE_S * (2 ** (attempt - 1))   # 15 s → 30 s → 60 s
-                if attempt < MAX_RETRIES:
-                    print(f"   ⏳ {response.status_code} — retrying in {wait}s...")
-                    time.sleep(wait)
-                else:
-                    print(f"   ❌ {response.status_code} — max retries exhausted.")
-                    return None
-
-            # ── anything else ──
-            else:
-                print(f"   ❌ Error {response.status_code}: {response.text[:300]}")
-                return None
-
-        except requests.exceptions.Timeout:
-            wait = RETRY_BASE_S * (2 ** (attempt - 1))
-            print(f"   ⏱️  Timeout on attempt {attempt}.")
-            if attempt < MAX_RETRIES:
-                print(f"   Retrying in {wait}s...")
-                time.sleep(wait)
-            else:
-                print("   ❌ Timeout — max retries exhausted.")
-                return None
-
-        except requests.exceptions.RequestException as e:
-            print(f"   ❌ Request error: {e}")
-            return None
-
-    return None
-
-
-# ================================================================
-# DEDUP  — pandas-based logic from the working script
-#          (drop_duplicates on CallID for inbound only)
+# DEDUP  — pandas drop_duplicates on CallID for inbound only
 # ================================================================
 def dedup_inbound(records):
     if not records:
@@ -136,8 +103,6 @@ def dedup_inbound(records):
     print(f"   Other   : {len(other_df)}")
 
     merged = pd.concat([inbound_deduped, other_df], ignore_index=True)
-
-    # ── clean exactly as the working script does ──
     merged = merged.fillna("")
     merged = merged.astype(str)
 
@@ -145,9 +110,7 @@ def dedup_inbound(records):
 
 
 # ================================================================
-# SAVE  — same CSV layout as original script 1
-#         Row 1 : header "data"
-#         Row 2 : entire JSON array as a single string  (GSheet-compatible)
+# SAVE  — same CSV layout (JSON string in A2, GSheet-compatible)
 # ================================================================
 def save_to_csv(records, filename="cdr_data_master.csv"):
     if not records:
@@ -159,8 +122,8 @@ def save_to_csv(records, filename="cdr_data_master.csv"):
 
         with open(filename, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["data"])        # Row 1 — header  (rows[0][0])
-            writer.writerow([json_string])   # Row 2 — JSON    (rows[1][0])
+            writer.writerow(["data"])       # Row 1 — header  (rows[0][0])
+            writer.writerow([json_string])  # Row 2 — JSON    (rows[1][0])
 
         print(f"\n💾 Saved '{filename}'")
         print(f"   Records : {len(records)}")
@@ -178,17 +141,18 @@ def save_to_csv(records, filename="cdr_data_master.csv"):
 # MAIN
 # ================================================================
 def main():
-    print("=" * 60)
-    print("🚀 CDR Data Fetch — Starting")
-    print("=" * 60)
+    now = datetime.now()
 
-    # 1. Fetch
-    records = fetch_cdr_data()
-    if records is None:
-        print("=" * 60)
-        print("❌ Process failed — no data received.")
-        print("=" * 60)
-        sys.exit(1)
+    print("=" * 60)
+    print("🚀 CDR Data Fetch — Static Mode (No API)")
+    print("=" * 60)
+    print(f"\n📋 Generating static CDR data")
+    print(f"   Date : {now.strftime('%Y-%m-%d')}")
+    print(f"   User : {USERNAME}")
+
+    # 1. Generate static records (replaces API call)
+    records = generate_static_records()
+    print(f"\n   ✅ Generated {len(records)} records (30 inbound + 15 outbound, 8 inbound dupes)")
 
     # 2. Dedup
     print(f"\n🔁 Deduplicating inbound calls...")
