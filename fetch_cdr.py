@@ -1,10 +1,9 @@
 import requests
 import csv
 import json
-import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ================================================================
 # CONFIG
@@ -13,23 +12,27 @@ API_KEY  = "KK01b6bcdbcad7fdfced420ada0186393b"
 USERNAME = "qht_regrow"
 URL      = "https://in1-ccaas-api.ozonetel.com/ca_reports/fetchCDRDetails"
 
-MAX_RETRIES  = 3
+MAX_RETRIES  = 4
 RETRY_BASE_S = 15
+TIMEOUT      = (10, 120)   # (connect, read) seconds — read raised to survive slow responses
+
+# Split the day into N-hour windows to reduce backend load per request.
+# 24 = single full-day request (old behaviour). 6 = four requests/day (recommended).
+CHUNK_HOURS  = 6
+
+# HTTP codes that are worth retrying (transient / server-side)
+RETRYABLE = {429, 500, 502, 503, 504}
 
 
 # ================================================================
-# FETCH
+# FETCH A SINGLE TIME WINDOW (with retry on 5xx / 429 / timeout)
 # ================================================================
-def fetch_cdr_data():
-    now       = datetime.now()
-    from_date = now.strftime("%Y-%m-%d 00:00:00")
-    to_date   = now.strftime("%Y-%m-%d 23:59:59")
-
-    print(f"\n📞 Fetching CDR data")
-    print(f"   From : {from_date}")
-    print(f"   To   : {to_date}")
-    print(f"   User : {USERNAME}")
-
+def fetch_window(from_date, to_date):
+    """
+    Returns: list of records on success.
+    Raises:  RuntimeError on auth failure (401) — fatal, no point retrying.
+             TimeoutError after exhausting retries — caller decides what to do.
+    """
     headers = {
         "apiKey":       API_KEY,
         "Content-Type": "application/json",
@@ -41,67 +44,111 @@ def fetch_cdr_data():
         "userName": USERNAME,
     }, allow_nan=True)
 
+    print(f"\n📞 Window {from_date}  →  {to_date}")
+
     for attempt in range(1, MAX_RETRIES + 1):
-        print(f"\n🔄 Attempt {attempt}/{MAX_RETRIES}...")
+        print(f"   🔄 Attempt {attempt}/{MAX_RETRIES}...")
         try:
             response = requests.request(
                 method="GET",
                 url=URL,
                 headers=headers,
                 data=payload,
-                timeout=30,
+                timeout=TIMEOUT,
             )
-            print(f"   Status : {response.status_code}")
+            print(f"      Status : {response.status_code}")
 
             if response.status_code == 200:
                 try:
                     data = response.json()
                 except json.JSONDecodeError as e:
-                    print(f"   ❌ JSON decode error: {e}")
-                    print(f"   Raw: {response.text[:300]}")
-                    return None
+                    print(f"      ❌ JSON decode error: {e}")
+                    print(f"      Raw: {response.text[:300]}")
+                    raise TimeoutError("Bad JSON in 200 response")
 
                 if "details" not in data:
-                    print(f"   ❌ 'details' key missing. Keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-                    print(f"   Response: {str(data)[:300]}")
-                    return None
+                    keys = list(data.keys()) if isinstance(data, dict) else type(data)
+                    print(f"      ❌ 'details' key missing. Keys: {keys}")
+                    raise TimeoutError("'details' key missing")
 
                 records = data["details"]
-                print(f"   ✅ Got {len(records)} records.")
+                print(f"      ✅ Got {len(records)} records.")
                 return records
 
-            elif response.status_code == 429:
+            elif response.status_code == 401:
+                print(f"      ❌ 401 Unauthorised — API key or username wrong.")
+                raise RuntimeError("401 Unauthorised — fatal, check API_KEY / USERNAME")
+
+            elif response.status_code in RETRYABLE:
+                # 504, 502, 503, 500, 429 — all transient, back off and retry
                 wait = RETRY_BASE_S * (2 ** (attempt - 1))
+                label = "Rate limited" if response.status_code == 429 else f"Server {response.status_code}"
                 if attempt < MAX_RETRIES:
-                    print(f"   ⏳ Rate limited. Waiting {wait}s...")
+                    print(f"      ⏳ {label}. Waiting {wait}s before retry...")
                     time.sleep(wait)
                 else:
-                    print("   ❌ Rate limited — max retries exhausted.")
-                    return None
-
-            elif response.status_code == 401:
-                print(f"   ❌ 401 Unauthorised — API key or username wrong.")
-                print(f"   API_KEY : {API_KEY[:10]}...")
-                print(f"   USERNAME: {USERNAME}")
-                return None
+                    print(f"      ❌ {label} — max retries exhausted.")
+                    raise TimeoutError(f"HTTP {response.status_code} after {MAX_RETRIES} attempts")
 
             else:
-                print(f"   ❌ Error {response.status_code}: {response.text[:300]}")
-                return None
+                print(f"      ❌ Error {response.status_code}: {response.text[:300]}")
+                raise TimeoutError(f"Unexpected HTTP {response.status_code}")
 
         except requests.exceptions.Timeout:
-            print(f"   ⏱️  Timeout on attempt {attempt}.")
+            wait = RETRY_BASE_S * (2 ** (attempt - 1))
+            print(f"      ⏱️  Client timeout on attempt {attempt}.")
             if attempt < MAX_RETRIES:
-                time.sleep(10)
-        except requests.exceptions.RequestException as e:
-            print(f"   ❌ Request error: {e}")
-            return None
+                print(f"      ⏳ Waiting {wait}s before retry...")
+                time.sleep(wait)
+            else:
+                raise TimeoutError("Client timeout after max retries")
 
-    return None
+        except requests.exceptions.RequestException as e:
+            wait = RETRY_BASE_S * (2 ** (attempt - 1))
+            print(f"      ❌ Request error: {e}")
+            if attempt < MAX_RETRIES:
+                time.sleep(wait)
+            else:
+                raise TimeoutError(f"Request error after max retries: {e}")
+
+    raise TimeoutError("Exhausted retries")
 
 
 # ================================================================
-# DEDUP  (inbound only, same as working GSheet script)
+# FETCH FULL DAY (chunked into CHUNK_HOURS windows)
+# ================================================================
+def fetch_cdr_data():
+    now = datetime.now()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end   = now.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    print(f"\n🗓️  Day : {day_start:%Y-%m-%d}")
+    print(f"   User : {USERNAME}")
+    print(f"   Chunk: {CHUNK_HOURS}h windows")
+
+    # Build the list of (from, to) windows
+    windows = []
+    cursor = day_start
+    while cursor <= day_end:
+        w_start = cursor
+        w_end   = min(cursor + timedelta(hours=CHUNK_HOURS) - timedelta(seconds=1), day_end)
+        windows.append((w_start.strftime("%Y-%m-%d %H:%M:%S"),
+                        w_end.strftime("%Y-%m-%d %H:%M:%S")))
+        cursor = w_end + timedelta(seconds=1)
+
+    all_records = []
+    for from_date, to_date in windows:
+        # Any window failing after retries aborts the run — partial CDR data
+        # would corrupt the daily report, so we fail loudly instead.
+        records = fetch_window(from_date, to_date)
+        all_records.extend(records)
+
+    print(f"\n   ✅ Total records across all windows: {len(all_records)}")
+    return all_records
+
+
+# ================================================================
+# DEDUP  (inbound only)
 # ================================================================
 def dedup_inbound(records):
     if not records:
@@ -127,12 +174,7 @@ def dedup_inbound(records):
 
 
 # ================================================================
-# SAVE — stores full JSON in A2 so GSheet importCDRFromGitHub()
-#         can read rows[1][0] and JSON.parse() it directly
-#
-#  CSV layout:
-#    Row 1 (header) : "data"
-#    Row 2 (A2)     : entire JSON array as a string
+# SAVE — full JSON in cell A2 (GSheet importCDRFromGitHub() compatible)
 # ================================================================
 def save_to_csv(records, filename="cdr_data_master.csv"):
     if not records:
@@ -140,9 +182,7 @@ def save_to_csv(records, filename="cdr_data_master.csv"):
         return None
 
     try:
-        # Serialise the full list to a JSON string
         json_string = json.dumps(records, ensure_ascii=False)
-
         with open(filename, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["data"])          # Row 1 — header (rows[0][0])
@@ -168,11 +208,17 @@ def main():
     print("🚀 CDR Data Fetch — Starting")
     print("=" * 60)
 
-    records = fetch_cdr_data()
-
-    if records is None:
+    try:
+        records = fetch_cdr_data()
+    except RuntimeError as e:          # auth failure — fatal
         print("=" * 60)
-        print("❌ Process failed — no data received.")
+        print(f"❌ Fatal: {e}")
+        print("=" * 60)
+        sys.exit(2)
+    except TimeoutError as e:          # a window failed after all retries
+        print("=" * 60)
+        print(f"❌ Process failed — a window could not be fetched: {e}")
+        print("   (Failing loudly to avoid saving partial CDR data.)")
         print("=" * 60)
         sys.exit(1)
 
